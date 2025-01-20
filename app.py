@@ -398,6 +398,19 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
 
 # Launch the Gradio app
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--host", type=str, default="127.0.0.1", help="Host for the server")
+    parser.add_argument("--port", type=int, default=7860, help="Port for the server")
+    args = parser.parse_args()
     pipeline = TrellisImageTo3DPipeline.from_pretrained("JeffreyXiang/TRELLIS-image-large")
     pipeline.cuda()
     demo.launch()
+    demo.launch(server_name=args.host, server_port=args.port)
+
+    """    
+    pipeline = TrellisImageTo3DPipeline.from_pretrained("JeffreyXiang/TRELLIS-image-large")
+    pipeline.cuda()
+    demo.launch()
+    """
