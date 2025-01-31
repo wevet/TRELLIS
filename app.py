@@ -12,7 +12,10 @@ from PIL import Image
 from trellis.pipelines import TrellisImageTo3DPipeline
 from trellis.representations import Gaussian, MeshExtractResult
 from trellis.utils import render_utils, postprocessing_utils
+import time
+import threading
 
+import app_helper
 
 MAX_SEED = np.iinfo(np.int32).max
 TMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tmp')
@@ -22,8 +25,8 @@ os.makedirs(TMP_DIR, exist_ok=True)
 def start_session(req: gr.Request):
     user_dir = os.path.join(TMP_DIR, str(req.session_hash))
     os.makedirs(user_dir, exist_ok=True)
-    
-    
+
+
 def end_session(req: gr.Request):
     user_dir = os.path.join(TMP_DIR, str(req.session_hash))
     shutil.rmtree(user_dir)
@@ -46,10 +49,10 @@ def preprocess_image(image: Image.Image) -> Image.Image:
 def preprocess_images(images: List[Tuple[Image.Image, str]]) -> List[Image.Image]:
     """
     Preprocess a list of input images.
-    
+
     Args:
         images (List[Tuple[Image.Image, str]]): The input images.
-        
+
     Returns:
         List[Image.Image]: The preprocessed images.
     """
@@ -73,8 +76,8 @@ def pack_state(gs: Gaussian, mesh: MeshExtractResult) -> dict:
             'faces': mesh.faces.cpu().numpy(),
         },
     }
-    
-    
+
+
 def unpack_state(state: dict) -> Tuple[Gaussian, edict, str]:
     gs = Gaussian(
         aabb=state['gaussian']['aabb'],
@@ -89,12 +92,12 @@ def unpack_state(state: dict) -> Tuple[Gaussian, edict, str]:
     gs._scaling = torch.tensor(state['gaussian']['_scaling'], device='cuda')
     gs._rotation = torch.tensor(state['gaussian']['_rotation'], device='cuda')
     gs._opacity = torch.tensor(state['gaussian']['_opacity'], device='cuda')
-    
+
     mesh = edict(
         vertices=torch.tensor(state['mesh']['vertices'], device='cuda'),
         faces=torch.tensor(state['mesh']['faces'], device='cuda'),
     )
-    
+
     return gs, mesh
 
 
@@ -106,16 +109,16 @@ def get_seed(randomize_seed: bool, seed: int) -> int:
 
 
 def image_to_3d(
-    image: Image.Image,
-    multiimages: List[Tuple[Image.Image, str]],
-    is_multiimage: bool,
-    seed: int,
-    ss_guidance_strength: float,
-    ss_sampling_steps: int,
-    slat_guidance_strength: float,
-    slat_sampling_steps: int,
-    multiimage_algo: Literal["multidiffusion", "stochastic"],
-    req: gr.Request,
+        image: Image.Image,
+        multiimages: List[Tuple[Image.Image, str]],
+        is_multiimage: bool,
+        seed: int,
+        ss_guidance_strength: float,
+        ss_sampling_steps: int,
+        slat_guidance_strength: float,
+        slat_sampling_steps: int,
+        multiimage_algo: Literal["multidiffusion", "stochastic"],
+        req: gr.Request,
 ) -> Tuple[dict, str]:
     """
     Convert an image to a 3D model.
@@ -178,10 +181,10 @@ def image_to_3d(
 
 
 def extract_glb(
-    state: dict,
-    mesh_simplify: float,
-    texture_size: int,
-    req: gr.Request,
+        state: dict,
+        mesh_simplify: float,
+        texture_size: int,
+        req: gr.Request,
 ) -> Tuple[str, str]:
     """
     Extract a GLB file from the 3D model.
@@ -241,35 +244,56 @@ def split_image(image: Image.Image) -> List[Image.Image]:
     """
     image = np.array(image)
     alpha = image[..., 3]
-    alpha = np.any(alpha>0, axis=0)
+    alpha = np.any(alpha > 0, axis=0)
     start_pos = np.where(~alpha[:-1] & alpha[1:])[0].tolist()
     end_pos = np.where(alpha[:-1] & ~alpha[1:])[0].tolist()
     images = []
     for s, e in zip(start_pos, end_pos):
-        images.append(Image.fromarray(image[:, s:e+1]))
+        images.append(Image.fromarray(image[:, s:e + 1]))
     return [preprocess_image(image) for image in images]
 
 
 with gr.Blocks(delete_cache=(600, 600)) as demo:
+    # JavaScript を埋め込む HTML コンポーネント
+    helper = app_helper.AppHelper()
+
     gr.Markdown("""
     ## Image to 3D Asset with [TRELLIS](https://trellis3d.github.io/)
     * Upload an image and click "Generate" to create a 3D asset. If the image has alpha channel, it be used as the mask. Otherwise, we use `rembg` to remove the background.
     * If you find the generated 3D asset satisfactory, click "Extract GLB" to extract the GLB file and download it.
     """)
-    
+
+    #Added Nagasawa notify function
+    gr.Markdown("""
+        <style>
+          gr-toast[status="info"] { background-color: #FFC107 !important; color: black !important; }
+
+          gr-toast { font-size: 16px !important; padding: 15px !important; }
+
+          gr-toast {
+            position: fixed !important;
+            top: 20px !important;
+            left: 50% !important;
+            transform: translateX(-50%) !important;
+            z-index: 9999 !important;
+          }
+        </style>
+        """)
+
     with gr.Row():
         with gr.Column():
             with gr.Tabs() as input_tabs:
                 with gr.Tab(label="Single Image", id=0) as single_image_input_tab:
-                    image_prompt = gr.Image(label="Image Prompt", format="png", image_mode="RGBA", type="pil", height=300)
+                    image_prompt = gr.Image(label="Image Prompt", format="png", image_mode="RGBA", type="pil",
+                                            height=300)
                 with gr.Tab(label="Multiple Images", id=1) as multiimage_input_tab:
-                    multiimage_prompt = gr.Gallery(label="Image Prompt", format="png", type="pil", height=300, columns=3)
+                    multiimage_prompt = gr.Gallery(label="Image Prompt", format="png", type="pil", height=300,
+                                                   columns=3)
                     gr.Markdown("""
-                        Input different views of the object in separate images. 
-                        
+                        Input different views of the object in separate images.                       
                         *NOTE: this is an experimental algorithm without training a specialized model. It may not produce the best results for all images, especially those having different poses or inconsistent details.*
                     """)
-            
+
             with gr.Accordion(label="Generation Settings", open=False):
                 seed = gr.Slider(0, MAX_SEED, label="Seed", value=0, step=1)
                 randomize_seed = gr.Checkbox(label="Randomize Seed", value=True)
@@ -281,14 +305,15 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
                 with gr.Row():
                     slat_guidance_strength = gr.Slider(0.0, 10.0, label="Guidance Strength", value=3.0, step=0.1)
                     slat_sampling_steps = gr.Slider(1, 50, label="Sampling Steps", value=12, step=1)
-                multiimage_algo = gr.Radio(["stochastic", "multidiffusion"], label="Multi-image Algorithm", value="stochastic")
+                multiimage_algo = gr.Radio(["stochastic", "multidiffusion"], label="Multi-image Algorithm",
+                                           value="stochastic")
 
             generate_btn = gr.Button("Generate")
-            
+
             with gr.Accordion(label="GLB Extraction Settings", open=False):
                 mesh_simplify = gr.Slider(0.9, 0.98, label="Simplify", value=0.95, step=0.01)
                 texture_size = gr.Slider(512, 2048, label="Texture Size", value=1024, step=512)
-            
+
             with gr.Row():
                 extract_glb_btn = gr.Button("Extract GLB", interactive=False)
                 extract_gs_btn = gr.Button("Extract Gaussian", interactive=False)
@@ -299,11 +324,11 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
         with gr.Column():
             video_output = gr.Video(label="Generated 3D Asset", autoplay=True, loop=True, height=300)
             model_output = LitModel3D(label="Extracted GLB/Gaussian", exposure=10.0, height=300)
-            
+
             with gr.Row():
                 download_glb = gr.DownloadButton(label="Download GLB", interactive=False)
-                download_gs = gr.DownloadButton(label="Download Gaussian", interactive=False)  
-    
+                download_gs = gr.DownloadButton(label="Download Gaussian", interactive=False)
+
     is_multiimage = gr.State(False)
     output_buf = gr.State()
 
@@ -333,7 +358,7 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
     # Handlers
     demo.load(start_session)
     demo.unload(end_session)
-    
+
     single_image_input_tab.select(
         lambda: tuple([False, gr.Row.update(visible=True), gr.Row.update(visible=False)]),
         outputs=[is_multiimage, single_image_example, multiimage_example]
@@ -342,7 +367,7 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
         lambda: tuple([True, gr.Row.update(visible=False), gr.Row.update(visible=True)]),
         outputs=[is_multiimage, single_image_example, multiimage_example]
     )
-    
+
     image_prompt.upload(
         preprocess_image,
         inputs=[image_prompt],
@@ -354,17 +379,27 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
         outputs=[multiimage_prompt],
     )
 
+    #Added Nagasawa notify function
     generate_btn.click(
         get_seed,
         inputs=[randomize_seed, seed],
         outputs=[seed],
     ).then(
         image_to_3d,
-        inputs=[image_prompt, multiimage_prompt, is_multiimage, seed, ss_guidance_strength, ss_sampling_steps, slat_guidance_strength, slat_sampling_steps, multiimage_algo],
+        inputs=[image_prompt, multiimage_prompt, is_multiimage, seed, ss_guidance_strength, ss_sampling_steps,
+                slat_guidance_strength, slat_sampling_steps, multiimage_algo],
         outputs=[output_buf, video_output],
     ).then(
         lambda: tuple([gr.Button(interactive=True), gr.Button(interactive=True)]),
         outputs=[extract_glb_btn, extract_gs_btn],
+    ).then(
+        lambda: ("", None),
+        inputs=[],
+        outputs=[helper.alert_box, helper.sound]
+    ).then(
+        lambda: helper.show_alert_notify("Image generation completed!", status="info"),
+        inputs=[],
+        outputs=[helper.alert_box, helper.sound]
     )
 
     video_output.clear(
@@ -372,6 +407,7 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
         outputs=[extract_glb_btn, extract_gs_btn],
     )
 
+    #Added Nagasawa notify function
     extract_glb_btn.click(
         extract_glb,
         inputs=[output_buf, mesh_simplify, texture_size],
@@ -379,8 +415,17 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
     ).then(
         lambda: gr.Button(interactive=True),
         outputs=[download_glb],
+    ).then(
+        lambda: ("", None),
+        inputs=[],
+        outputs=[helper.alert_box, helper.sound]
+    ).then(
+        lambda: helper.show_alert_notify("Extract GLB completed!", status="info"),
+        inputs=[],
+        outputs=[helper.alert_box, helper.sound]
     )
-    
+
+    #Added Nagasawa notify function
     extract_gs_btn.click(
         extract_gaussian,
         inputs=[output_buf],
@@ -388,13 +433,20 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
     ).then(
         lambda: gr.Button(interactive=True),
         outputs=[download_gs],
+    ).then(
+        lambda: ("", None),
+        inputs=[],
+        outputs=[helper.alert_box, helper.sound]
+    ).then(
+        lambda: helper.show_alert_notify("Extract Gaussian completed!", status="info"),
+        inputs=[],
+        outputs=[helper.alert_box, helper.sound]
     )
 
     model_output.clear(
         lambda: gr.Button(interactive=False),
         outputs=[download_glb],
     )
-    
 
 # Launch the Gradio app
 if __name__ == "__main__":
@@ -404,13 +456,8 @@ if __name__ == "__main__":
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Host for the server")
     parser.add_argument("--port", type=int, default=7860, help="Port for the server")
     args = parser.parse_args()
+
     pipeline = TrellisImageTo3DPipeline.from_pretrained("JeffreyXiang/TRELLIS-image-large")
     pipeline.cuda()
-    demo.launch()
     demo.launch(server_name=args.host, server_port=args.port)
 
-    """    
-    pipeline = TrellisImageTo3DPipeline.from_pretrained("JeffreyXiang/TRELLIS-image-large")
-    pipeline.cuda()
-    demo.launch()
-    """
